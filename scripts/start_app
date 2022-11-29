@@ -1,0 +1,5 @@
+#!/bin/bash
+source /etc/profile
+cd /usr/share/nginx/html/donutserver
+nginx -s reload
+gunicorn DonutWebApp.wsgi -D

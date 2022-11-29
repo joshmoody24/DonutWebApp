@@ -1,0 +1,431 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  CodeS3Bucket:
+    Type: String
+    Description: The name of the S3 bucket in which a zip file with your application is stored
+  CodeS3Key:
+    Type: String
+    Description: The file name of the zip file containing your application
+  WebServerInstanceClass:
+    Type: String
+    Default: t2.nano
+    Description: The instance type for the web servers
+  MaxWebServerInstances:
+    Type: Number
+    Description: The max number of webservers that the auto scaling group will create.
+    MinValue: 2
+    MaxValue: 200
+    Default: 2
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.micro
+    Description: The instance type for the PostgreSQL database
+  WebsiteUsername:
+    Type: String
+    Default: admin
+    Description: The username for the Django superuser
+  WebsitePassword:
+    Type: String
+    Default: password
+    Description: The password for the Django superuser
+  DBUsername:
+    Type: String
+    Default: MyUsername
+    Description: The root username for the PostgreSQL database
+  DBPassword:
+    Type: String
+    Default: MyPassword
+    Description: The root password for the PostgreSQL database
+  DBName:
+    Type: String
+    Default: DonutDB
+    Description: The name of the database your application will use
+
+Resources:
+
+  DonutVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+
+  WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref DonutVPC
+      GroupDescription: Web security group that allows HTTP ony
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        # uncomment below to enable SSH access
+        #- IpProtocol: tcp
+        #  FromPort: 22
+        #  ToPort: 22
+        #  CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        IpProtocol: -1
+        CidrIp: 0.0.0.0/0
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref DonutVPC
+      GroupDescription: Security group that allows only PostgreSQL
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        IpProtocol: -1
+        CidrIp: 0.0.0.0/0
+
+  DonutInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties: {}
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-west-1b
+      CidrBlock: 10.0.0.0/24
+      VpcId: !Ref DonutVPC
+      MapPublicIpOnLaunch: true
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-west-1c
+      CidrBlock: 10.0.1.0/24
+      VpcId: !Ref DonutVPC
+      MapPublicIpOnLaunch: true
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-west-1b
+      CidrBlock: 10.0.2.0/24
+      VpcId: !Ref DonutVPC
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-west-1c
+      CidrBlock: 10.0.3.0/24
+      VpcId: !Ref DonutVPC
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+       DBSubnetGroupDescription: "Subnet for Donut DB"
+       SubnetIds:
+         - !Ref PrivateSubnetA
+         - !Ref PrivateSubnetB
+
+  DonutRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref DonutVPC
+
+  InternetRoute:
+    Type: AWS::EC2::Route
+    DependsOn: DonutInternetGateway
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref DonutInternetGateway
+      RouteTableId: !Ref DonutRouteTable
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref DonutVPC
+      InternetGatewayId: !Ref DonutInternetGateway
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref DonutRouteTable
+      SubnetId: !Ref PublicSubnetA
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref DonutRouteTable
+      SubnetId: !Ref PublicSubnetB
+
+  DonutAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WebServerLaunchTemplate
+        Version: !GetAtt WebServerLaunchTemplate.LatestVersionNumber
+      VPCZoneIdentifier:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      MaxSize: !Ref MaxWebServerInstances
+      MinSize: 2
+      TargetGroupARNs:
+        - !Ref WebTargetGroup
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+
+  InstanceRolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: InstanceRole
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action:
+              - autoscaling:Describe*
+              - cloudformation:Describe*
+              - cloudformation:GetTemplate
+              - s3:Get*
+            Resource: '*'
+      Roles:
+        - !Ref 'InstanceRole'
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref 'InstanceRole'
+
+  WebServerLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    DependsOn: DonutDB
+    Properties:
+      LaunchTemplateData:
+        ImageId: ami-09208e69ff3feb1db
+        KeyName: EC2Key
+        InstanceType: !Ref WebServerInstanceClass
+        IamInstanceProfile:
+          Arn: !GetAtt InstanceProfile.Arn
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              DeleteOnTermination: true
+              VolumeSize: 8
+              VolumeType: gp2
+        SecurityGroupIds:
+          - Ref: WebSecurityGroup
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            yum -y update
+            yum install -y ruby
+            yum install -y aws-cli
+            wget https://aws-codedeploy-us-east-2.s3.us-east-2.amazonaws.com/latest/install
+            chmod +x ./install
+            ./install auto
+            echo export DB_ENDPOINT=${ DonutDB.Endpoint.Address } >> /etc/profile
+            echo export DB_USERNAME=${ DBUsername } >> /etc/profile
+            echo export DB_PASSWORD=${ DBPassword } >> /etc/profile
+            echo export DB_NAME=${ DBName } >> /etc/profile
+            echo export DJANGO_SUPERUSER_USERNAME=${ WebsiteUsername } >> /etc/profile
+            echo export DJANGO_SUPERUSER_PASSWORD=${ WebsitePassword } >> /etc/profile
+            echo export DJANGO_SUPERUSER_EMAIL=fake@example.com >> /etc/profile
+
+  DonutLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      SubnetMappings:
+        - SubnetId: !Ref PublicSubnetA
+        - SubnetId: !Ref PublicSubnetB
+      Type: network
+
+  WebListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref WebTargetGroup
+          Type: forward
+      LoadBalancerArn: !Ref DonutLoadBalancer
+      Port: 80
+      Protocol: TCP
+
+  WebTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: 80
+      Protocol: TCP
+      VpcId: !Ref DonutVPC
+
+  DonutDB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      AllocatedStorage: '5'
+      MultiAZ: true
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: postgres
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      BackupRetentionPeriod: 1 # set to 0 to disable backups (dev only)
+      DBName: DonutDB
+
+  DonutDBReadReplica:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      DBInstanceClass: !Ref DBInstanceClass
+      SourceDBInstanceIdentifier: !Ref DonutDB
+
+  DonutRepo:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: DonutWebAppRepo
+      RepositoryDescription: Donut Web app repository
+      Code: 
+        BranchName: Main
+        S3:
+          Bucket: !Ref CodeS3Bucket
+          Key: !Ref CodeS3Key
+          
+  DonutWebApplication: 
+    Type: AWS::CodeDeploy::Application 
+    Properties:
+      ComputePlatform: Server
+
+  CodeDeployTrustRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Sid: '1'
+            Effect: Allow
+            Principal:
+              Service:
+                - codedeploy.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+
+  CodeDeployRolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CodeDeployPolicy
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Resource:
+              - '*'
+            Action:
+              - ec2:Describe*
+          - Effect: Allow
+            Resource:
+              - '*'
+            Action:
+              - autoscaling:CompleteLifecycleAction
+              - autoscaling:DeleteLifecycleHook
+              - autoscaling:DescribeLifecycleHooks
+              - autoscaling:DescribeAutoScalingGroups
+              - autoscaling:PutLifecycleHook
+              - autoscaling:RecordLifecycleActionHeartbeat
+      Roles:
+        - !Ref CodeDeployTrustRole
+
+  DeploymentGroup: 
+    Type: AWS::CodeDeploy::DeploymentGroup 
+    DependsOn: DonutWebApplication
+    Properties:
+      ApplicationName: 
+        Ref: "DonutWebApplication" 
+      AutoScalingGroups: 
+        - Ref: DonutAutoScalingGroup 
+      ServiceRoleArn: !GetAtt CodeDeployTrustRole.Arn # arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforAWSCodeDeploy
+
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Resource:
+                  - !Sub arn:aws:s3:::${ CodeS3Bucket }/*
+                  - !Sub arn:aws:s3:::${ CodeS3Bucket }
+                Effect: Allow
+                Action:
+                  - s3:*
+              - Resource: "*"
+                Effect: Allow
+                Action:
+                  - codedeploy:CreateDeployment
+                  - codedeploy:CreateDeploymentGroup
+                  - codedeploy:GetApplication
+                  - codedeploy:GetApplicationRevision
+                  - codedeploy:GetDeployment
+                  - codedeploy:GetDeploymentConfig
+                  - codedeploy:RegisterApplicationRevision
+              - Resource: "*"
+                Effect: Allow
+                Action:
+                 - codecommit:BatchGetRepositories
+                 - codecommit:Get*
+                 - codecommit:GitPull
+                 - codecommit:List*
+                 - codecommit:UploadArchive
+
+  DonutCodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref CodeS3Bucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: App
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: '1'
+                Provider: CodeCommit
+              Configuration:
+                BranchName: Main
+                RepositoryName: DonutWebAppRepo
+              OutputArtifacts:
+                - Name: AppArtifact
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+          - Name: Deploy
+            ActionTypeId:
+              Category: Deploy
+              Owner: AWS
+              Version: '1'
+              Provider: CodeDeploy
+            Configuration:
+              ApplicationName: !Ref DonutWebApplication
+              DeploymentGroupName: !Ref DeploymentGroup
+            InputArtifacts:
+             - Name: AppArtifact
+            RunOrder: 1

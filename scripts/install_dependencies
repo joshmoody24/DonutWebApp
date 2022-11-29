@@ -1,0 +1,5 @@
+#!/bin/bash
+yum -y update
+amazon-linux-extras install nginx1
+sytemctl enable nginx
+python3 -m pip install django psycopg2-binary gunicorn
