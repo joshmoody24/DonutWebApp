@@ -1,0 +1,237 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  CodeS3Bucket:
+    Type: String
+    Description: The name of the S3 bucket in which a zip file with your application is stored
+  CodeS3Key:
+    Type: String
+    Description: The file name of the zip file containing your application
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.micro
+    Description: The instance type for the PostgreSQL database
+  DBUsername:
+    Type: String
+    Default: root
+    Description: The root username for the PostgreSQL database
+  DBPassword:
+    Type: String
+    Default: password123
+    Description: The root password for the PostgreSQL database
+  DBName:
+    Type: String
+    Default: DonutDB
+    Description: The name of the database your application will use
+
+Resources:
+
+  DonutVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+
+  WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref DonutVPC
+      GroupDescription: Web security group that allows HTTP ony
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        IpProtocol: -1
+        CidrIp: 0.0.0.0/0
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref DonutVPC
+      GroupDescription: Security group that allows only PostgreSQL
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        IpProtocol: -1
+        CidrIp: 0.0.0.0/0
+
+  DonutInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties: {}
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-west-1b
+      CidrBlock: 10.0.0.0/24
+      VpcId: !Ref DonutVPC
+      MapPublicIpOnLaunch: true
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-west-1c
+      CidrBlock: 10.0.1.0/24
+      VpcId: !Ref DonutVPC
+      MapPublicIpOnLaunch: true
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-west-1b
+      CidrBlock: 10.0.2.0/24
+      VpcId: !Ref DonutVPC
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-west-1c
+      CidrBlock: 10.0.3.0/24
+      VpcId: !Ref DonutVPC
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+       DBSubnetGroupDescription: "Subnet for Donut DB"
+       SubnetIds:
+         - !Ref PrivateSubnetA
+         - !Ref PrivateSubnetB
+
+  DonutRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref DonutVPC
+
+  InternetRoute:
+    Type: AWS::EC2::Route
+    DependsOn: DonutInternetGateway
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref DonutInternetGateway
+      RouteTableId: !Ref DonutRouteTable
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref DonutVPC
+      InternetGatewayId: !Ref DonutInternetGateway
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref DonutRouteTable
+      SubnetId: !Ref PublicSubnetA
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref DonutRouteTable
+      SubnetId: !Ref PublicSubnetB
+
+  DonutDB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      AllocatedStorage: '5'
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: postgres
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      BackupRetentionPeriod: 0 # set to 0 to disable backups (dev only)
+      DBName: DonutDB
+
+  DonutRepo:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: DonutWebAppRepo
+      RepositoryDescription: Donut Web app repository
+      Code: 
+        BranchName: Main
+        S3:
+          Bucket: !Ref CodeS3Bucket
+          Key: !Ref CodeS3Key
+
+Outputs:
+  DonutRep:
+    Description: 'Id of the CodeCommit repository'
+    Value: !Ref DonutRepo
+    Export:
+      Name: !Sub "${AWS::StackName}-Repo"
+  DonutDB:
+    Description: "Id of the RDS Database"
+    Value: !Ref DonutDB
+    Export:
+      Name: !Sub "${AWS::StackName}-DB"
+  PublicSubnetA:
+    Description: "Id of the first public subnet"
+    Value: !Ref PublicSubnetA
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnetA"
+  PublicSubnetB:
+    Description: "Id of the second public subnet"
+    Value: !Ref PublicSubnetB
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicSubnetB"
+  PrivateSubnetA:
+    Description: "Id of the first private subnet"
+    Value: !Ref PrivateSubnetA
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnetA"
+  PrivateSubnetB:
+    Description: "Id of the second private subnet"
+    Value: !Ref PrivateSubnetB
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnetB"
+  DonutVPC:
+    Description: "Id of the VPC"
+    Value: !Ref DonutVPC
+    Export:
+      Name: !Sub "${AWS::StackName}-VPC"
+  WebSecurityGroup:
+    Description: "Id of the web security group"
+    Value: !Ref WebSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-WebSecurityGroup"
+  DBSecurityGroup:
+    Description: "Id of the DB security group"
+    Value: !Ref DBSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-DBSecurityGroup"
+  S3Bucket:
+    Description: "S3 bucket that stores everything"
+    Value: !Ref CodeS3Bucket
+    Export:
+      Name: !Sub "${AWS::StackName}-S3Bucket"
+  RouteTable:
+    Description: "Route Table"
+    Value: !Ref DonutRouteTable
+    Export:
+      Name: !Sub "${AWS::StackName}-RouteTable"
+  DBUser:
+    Description: "DB Username"
+    Value: !Ref DBUsername
+    Export:
+      Name: !Sub "${AWS::StackName}-DBUser"
+  # obviously insecure, this is just proof of concept
+  DBPassword:
+    Description: "DB Password"
+    Value: !Ref DBPassword
+    Export:
+      Name: !Sub "${AWS::StackName}-DBPassword"
+  DBName:
+    Description: "DB Name"
+    Value: !Ref DBName
+    Export:
+      Name: !Sub "${AWS::StackName}-DBName"
+  DBEndpoint:
+    Description: "DB Endpoint"
+    Value: !GetAtt DonutDB.Endpoint.Address
+    Export:
+      Name: !Sub "${AWS::StackName}-DBEndpoint"

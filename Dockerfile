@@ -1,7 +1,8 @@
-FROM python:3.120a2-alpine3.17
+FROM python:3
 WORKDIR /app
 COPY ./DonutWebApp .
-RUN yum -y update
+COPY ./start.sh .
 RUN python3 -m pip install django psycopg2-binary gunicorn
-CMD ["gunicorn", "DonutWebApp.wsgi", "-D"]
+RUN chmod +x ./start.sh
+CMD ["./start.sh"]
 EXPOSE 8000

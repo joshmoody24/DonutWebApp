@@ -1,7 +1,0 @@
-#!/bin/bash
-isExistApp = `pgrep gunicorn`
-if [[ -n  $isExistApp ]]; then
-    pkill gunicorn    
-    systemctl stop nginx
-fi
-

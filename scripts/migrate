@@ -1,8 +1,0 @@
-#!/bin/bash
-source /etc/profile
-cd /usr/share/nginx/html/donutserver
-python3 manage.py makemigrations
-python3 manage.py migrate
-python3 manage.py createsuperuser --noinput || true
-python3 manage.py collectstatic --noinput || true
-python3 manage.py loaddata ./MainApp/datadump/seed.json
